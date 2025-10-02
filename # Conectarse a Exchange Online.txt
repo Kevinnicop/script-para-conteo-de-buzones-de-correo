@@ -1,0 +1,48 @@
+# Conectarse a Exchange Online
+Connect-ExchangeOnline -UserPrincipalName johan.rusinque@alcabama.com.co
+
+# Crear reporte completo sin detenerse
+Get-Mailbox -ResultSize Unlimited -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+        $mbx = $_
+
+        # Intentar obtener estadísticas, si falla sigue
+        $stats = Get-MailboxStatistics -Identity $mbx.UserPrincipalName -ErrorAction SilentlyContinue
+        $quotaObj = Get-Mailbox -Identity $mbx.UserPrincipalName -ErrorAction SilentlyContinue
+
+        $quota = if ($quotaObj) { $quotaObj.ProhibitSendQuota } else { $null }
+
+        # Convertir tamaños a GB desde string (con validación de nulos)
+        $usedGB = if ($stats -and $stats.TotalItemSize) {
+            [math]::Round(($stats.TotalItemSize.ToString().Split("(")[1].Split(" ")[0] -as [double]) / 1GB, 2)
+        } else { 0 }
+
+        $quotaGB = if ($quota -ne $null -and $quota.ToString() -notmatch "Unlimited") {
+            [math]::Round(($quota.ToString().Split("(")[1].Split(" ")[0] -as [double]) / 1GB, 2)
+        } else { 0 }
+
+        if ($quotaGB -gt 0) {
+            $percentUsed = [math]::Round(($usedGB / $quotaGB) * 100, 2)
+            $percentRemaining = 100 - $percentUsed
+        }
+        else {
+            $percentUsed = 0
+            $percentRemaining = 0
+        }
+
+        # Crear objeto con datos listos para Power BI
+        [PSCustomObject]@{
+            Correo             = $mbx.PrimarySmtpAddress
+            Usuario            = $mbx.DisplayName
+            EspacioTotal_GB    = $quotaGB
+            EspacioUsado_GB    = $usedGB
+            PorcentajeUsado    = $percentUsed
+            PorcentajeRestante = $percentRemaining
+            ConteoCorreos      = if ($stats) { $stats.ItemCount } else { 0 }
+        }
+    }
+    catch {
+        # Si hay error con un buzón, sigue al siguiente sin parar
+        Write-Host "Error con buzón: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+} | Export-Csv "C:\Users\kevin.perez\Downloads\Reporte_Buzones_PowerBI.csv" -NoTypeInformation -Encoding UTF8 -Force
